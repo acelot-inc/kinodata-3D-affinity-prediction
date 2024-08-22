@@ -10,5 +10,6 @@ print(find_packages())
 setup(
     name="kinodata",
     version=get_version(),
-    packages=find_packages(),
+    packages=find_packages(include=["kinodata", "kinodata.data", "kinodata.data.featurization"]),
+
 )
