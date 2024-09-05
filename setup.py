@@ -1,37 +1,3 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
-setup(
-    name="kinodata",
-    version="1.0.0",
-        install_requires=[
-        "numpy>=1.24.1",
-        "pandas==1.5.2",
-        "scipy==1.10.0",
-        "tqdm==4.64.1",
-        "matplotlib==3.6.2",
-        "ipykernel==6.20.1",
-        "black==23.7.0",
-        "wandb==0.13.9",
-        "pytorch-lightning",
-        "mypy==1.0.0",
-        "seaborn==0.12.2",
-        "cvxpy==1.3.1",
-        "biotite==0.36.1",
-        "biopandas==0.4.1",
-        "torch",
-        "torch_cluster",
-        "torch_scatter",
-        "rdkit",
-        "torch_geometric",
-    ],
-    packages=find_packages(include=[
-        "kinodata",
-        "kinodata.transform",
-        "kinodata.model",
-        "kinodata.training",
-        "kinodata.data",
-        "kinodata.data.featurization",
-        "kinodata.data.io",
-        "kinodata.data.utils"
-    ]),
-)
+setup()
