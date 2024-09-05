@@ -1,5 +1,8 @@
 import logging
 import multiprocessing as mp
+import torch.multiprocessing as mpt 
+from tempfile import NamedTemporaryFile
+
 import os
 import os.path as osp
 import re
@@ -181,6 +184,7 @@ def process_raw_data(
     #     df[["ident", "structure.pocket_sequence", "similar.klifs_structure_id"]].to_csv(
     #         pocket_sequence_file, index=False
     #     )
+    print('done calculating df')
 
     return df
 
@@ -242,7 +246,8 @@ class KinodataDockedAgnostic:
         self,
         raw_dir: str = str(_DATA / "raw"),
         remove_hydrogen: bool = True,
-    ):
+    ):  
+        print('here in Agn')
         self.raw_dir = Path(raw_dir)
         self.remove_hydrogen = remove_hydrogen
         print(f"Loading raw data from {self.raw_dir}...")
@@ -356,26 +361,39 @@ class KinodataDocked(InMemoryDataset):
 
     def make_data_list(self) -> List[HeteroData]:
         RDLogger.DisableLog("rdApp.*")
-        data_list = []
         complex_info = ComplexInformation.from_raw(
             self.df, remove_hydrogen=self.remove_hydrogen
         )
+
+        chunk_size = 12000
+        print(f'{len(complex_info)=}')
+        temp_files = []
+
         if self.use_multiprocessing:
             tasks = [
                 (_complex, self.residue_representation, self.require_kissim_residues)
                 for _complex in complex_info
             ]
-            with mp.Pool(os.cpu_count()) as pool:
-                data_list = pool.map(_process_pyg, tqdm(tasks))
+
+            with mpt.Pool(self.num_processes) as pool:
+                for i in range(0, len(tasks), chunk_size):
+                    chunk = tasks[i:i + chunk_size]
+                    temp_chunk_files = pool.map(_process_pyg_to_file, tqdm(chunk))
+                    temp_files.extend(temp_chunk_files)
+
         else:
             process = partial(
                 process_pyg,
                 residue_representation=self.residue_representation,
                 require_kissim_residues=self.require_kissim_residues,
             )
-            data_list = list(map(process, tqdm(complex_info)))
+            for i in range(0, len(complex_info), chunk_size):
+                chunk = complex_info[i:i + chunk_size]
+                temp_chunk_files = [_process_pyg_to_file(task) for task in chunk]
+                temp_files.extend(temp_chunk_files)
 
-        data_list = [d for d in data_list if d is not None]
+        # Load the data back from the temp files and aggregate
+        data_list = [torch.load(file) for file in temp_files if file is not None]
         return data_list
 
     def filter_transform(self, data_list: List[HeteroData]) -> List[HeteroData]:
@@ -486,6 +504,13 @@ def apply_transform_instance_permament(
 def _process_pyg(args) -> Optional[HeteroData]:
     return process_pyg(*args)
 
+def _process_pyg_to_file(args) -> Optional[str]:
+    result = process_pyg(*args)
+    if result is not None:
+        with NamedTemporaryFile(delete=False) as temp_file:
+            torch.save(result, temp_file.name)
+            return temp_file.name  # Return the temporary file path
+    return None
 
 def process_pyg(
     complex: Optional[ComplexInformation] = None,
