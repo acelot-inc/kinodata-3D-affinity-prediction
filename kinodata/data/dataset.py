@@ -423,6 +423,160 @@ class KinodataDocked(InMemoryDataset):
         return dict(mapping)
 
 
+class KinodataDockedLive(InMemoryDataset):
+    def __init__(
+        self,
+        root: Optional[str] = str(_DATA),
+        prefix: Optional[str] = None,
+        remove_hydrogen: bool = True,
+        transform: Optional[Callable] = None,
+        pre_transform: Optional[Callable] = None,
+        pre_filter: Optional[Callable] = None,
+        post_filter: Optional[Callable] = None,
+        residue_representation: Literal["sequence", "structural", None] = "sequence",
+        require_kissim_residues: bool = False,
+        use_multiprocessing: bool = True,
+        num_processes: Optional[int] = None,
+    ):
+        self.remove_hydrogen = remove_hydrogen
+        self._prefix = prefix
+        self.residue_representation = residue_representation
+        self.require_kissim_residues = require_kissim_residues
+        self.use_multiprocessing = use_multiprocessing
+        if self.use_multiprocessing:
+            num_processes = num_processes if num_processes else os.cpu_count()
+        self.make_pyg_data = partial(
+            process_pyg,
+            residue_representation=self.residue_representation,
+            require_kissim_residues=self.require_kissim_residues,
+        )
+        self.num_processes = num_processes
+        self.post_filter = post_filter
+        super().__init__(root, transform, pre_transform, pre_filter)
+        self.data, self.slices = torch.load(self.processed_paths[0])
+
+    @property
+    def pocket_sequence_file(self) -> Path:
+        return Path(self.raw_dir) / "pocket_sequences.csv"
+
+    @property
+    def raw_file_names(self) -> List[str]:
+        return ["kinodata_docked_v2.sdf"]
+
+    @property
+    def processed_file_names(self) -> List[str]:
+        # TODO add preprocessed kssim fingerprints?
+        return [
+            f"kinodata_docked_v2.pt",
+        ]
+
+    @property
+    def processed_dir(self) -> str:
+        pdir = super().processed_dir
+        if self.prefix is not None:
+            pdir = osp.join(pdir, self.prefix)
+        return pdir
+
+    @property
+    def prefix(self) -> Optional[str]:
+        return self._prefix
+
+    @property
+    def pocket_dir(self) -> Path:
+        return Path(self.raw_dir) / "mol2" / "pocket"
+
+    def download(self):
+        # TODO at some point set up public download?
+        pass
+
+    @cached_property
+    def df(self) -> pd.DataFrame:
+        return process_raw_data(
+            Path(self.raw_dir),
+            self.raw_file_names[0],
+            self.remove_hydrogen,
+            self.pocket_dir,
+            self.pocket_sequence_file,
+            activity_type_subset=None,
+            live_predictions=True
+        )
+
+    def _process(self):
+        f = osp.join(self.processed_dir, "post_filter.pt")
+        if osp.exists(f) and torch.load(f) != _repr(self.post_filter):
+            warnings.warn(
+                f"The `post_filter` argument differs from the one used in "
+                f"the pre-processed version of this dataset. If you want to "
+                f"make use of another pre-fitering technique, make sure to "
+                f"delete '{self.processed_dir}' first"
+            )
+        super()._process()
+        path = osp.join(self.processed_dir, "post_filter.pt")
+        torch.save(_repr(self.post_filter), path)
+
+    def make_data_list(self) -> List[HeteroData]:
+        RDLogger.DisableLog("rdApp.*")
+        data_list = []
+        complex_info = [ComplexInformation(
+            row["ident"],
+            row["compound_structures.canonical_smiles"],
+            row["molecule"],
+            None,
+            None,
+            Path(row["pocket_mol2_file"]),
+            None,
+            None,
+            int(row["similar.klifs_structure_id"]),
+            row["structure.pocket_sequence"],
+            None,
+            self.remove_hydrogen
+        ) for _, row in self.df.iterrows()]
+        if self.use_multiprocessing:
+            tasks = [
+                (_complex, self.residue_representation, self.require_kissim_residues, True)
+                for _complex in complex_info
+            ]
+            with mp.Pool(os.cpu_count()) as pool:
+                data_list = pool.map(_process_pyg, tqdm(tasks))
+        else:
+            process = partial(
+                process_pyg,
+                residue_representation=self.residue_representation,
+                require_kissim_residues=self.require_kissim_residues,
+                live_data=True,
+            )
+            data_list = list(map(process, tqdm(complex_info)))
+
+        data_list = [d for d in data_list if d is not None]
+        return data_list
+
+    def filter_transform(self, data_list: List[HeteroData]) -> List[HeteroData]:
+        if self.pre_filter is not None:
+            print("Applying pre filter..")
+            data_list = [data for data in data_list if self.pre_filter(data)]
+        if self.pre_transform is not None:
+            print("Applying pre transform..")
+            data_list = [self.pre_transform(data) for data in data_list]
+        if self.post_filter is not None:
+            print("Applying post filter..")
+            data_list = [data for data in data_list if self.post_filter(data)]
+        return data_list
+
+    def persist(self, data_list: List[HeteroData]):
+        data, slices = self.collate(data_list)
+        torch.save((data, slices), self.processed_paths[0])
+
+    def process(self):
+        data_list = self.make_data_list()
+        data_list = self.filter_transform(data_list)
+        self.persist(data_list)
+
+    def ident_index_map(self) -> Dict[Any, int]:
+        # this may be very slow if self.transform is computationally expensive
+        mapping = [(int(data.ident), index) for index, data in enumerate(self)]
+        return dict(mapping)
+
+
 def repr_filter(filter: Callable):
     return (
         repr(filter)
