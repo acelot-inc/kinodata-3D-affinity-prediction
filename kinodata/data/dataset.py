@@ -677,6 +677,7 @@ def process_pyg(
     complex: Optional[ComplexInformation] = None,
     residue_representation: Literal["sequence", "structural", None] = "sequence",
     require_kissim_residues: bool = False,
+    live_data: bool = False,
 ) -> Optional[HeteroData]:
     if complex is None:
         logging.warning(f"process_pyg received None as complex input")
@@ -709,13 +710,14 @@ def process_pyg(
             return None
         data = add_kissim_fp(data, kissim_fp, subset=PHYSICOCHEMICAL + STRUCTURAL)
 
-    data.y = torch.tensor(complex.activity_value).view(1)
-    data.docking_score = torch.tensor(complex.docking_score).view(1)
-    data.posit_prob = torch.tensor(complex.docking_score).view(1)
-    data.predicted_rmsd = torch.tensor(complex.predicted_rmsd).view(1)
+    if not live_data:
+        data.y = torch.tensor(complex.activity_value).view(1)
+        data.docking_score = torch.tensor(complex.docking_score).view(1)
+        data.posit_prob = torch.tensor(complex.docking_score).view(1)
+        data.predicted_rmsd = torch.tensor(complex.predicted_rmsd).view(1)
+        data.activity_type = complex.activity_type
     data.pocket_sequence = complex.pocket_sequence
     data.scaffold = ligand_scaffold
-    data.activity_type = complex.activity_type
     data.ident = complex.kinodata_ident
     data.smiles = complex.compound_smiles
     return data
