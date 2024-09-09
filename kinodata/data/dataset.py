@@ -75,6 +75,7 @@ def process_raw_data(
     pocket_dir: Optional[Path] = None,
     pocket_sequence_file: Optional[Path] = None,
     activity_type_subset: Optional[List[str]] = None,
+    live_predictions: bool = False,
 ) -> pd.DataFrame:
     if pocket_dir is None:
         pocket_dir = raw_dir / "mol2" / "pocket"
@@ -89,37 +90,42 @@ def process_raw_data(
         embedProps=True,
         removeHs=remove_hydrogen,
     )
-    if activity_type_subset is not None:
-        df = df.query("`activities.standard_type` in @activity_type_subset")
-    df["activities.standard_value"] = df["activities.standard_value"].astype(float)
-    df["docking.predicted_rmsd"] = df["docking.predicted_rmsd"].astype(float)
 
-    print(f"Deduping data frame (current size: {df.shape[0]})...")
-    group_key = [
-        "compound_structures.canonical_smiles",
-        "UniprotID",
-        "activities.standard_type",
-    ]
-    mean_activity = (
-        df.groupby(group_key).agg({"activities.standard_value": "mean"}).reset_index()
-    )
-    best_structure = (
-        df.sort_values(by="docking.predicted_rmsd", ascending=True)
-        .groupby(group_key)[group_key + ["docking.predicted_rmsd", "molecule"]]
-        .head(1)
-    )
-    deduped = pd.merge(mean_activity, best_structure, how="outer", on=group_key)
-    df = pd.merge(
-        df.drop_duplicates(group_key),
-        deduped,
-        how="left",
-        on=group_key,
-        suffixes=(".orig", None),
-    )
-    for col in ("activities.standard_value", "docking.predicted_rmsd", "molecule"):
-        del df[f"{col}.orig"]
-    # df.set_index("ID", inplace=True)
-    print(f"{df.shape[0]} complexes remain after deduplication.")
+    if activity_type_subset is not None:
+        print("printing df:")
+        print(df.columns)
+        df = df.query("`activities.standard_type` in @activity_type_subset")
+
+    if not live_predictions:
+        df["activities.standard_value"] = df["activities.standard_value"].astype(float)
+        df["docking.predicted_rmsd"] = df["docking.predicted_rmsd"].astype(float)
+
+        print(f"Deduping data frame (current size: {df.shape[0]})...")
+        group_key = [
+            "compound_structures.canonical_smiles",
+            "UniprotID",
+            "activities.standard_type",
+        ]
+        mean_activity = (
+            df.groupby(group_key).agg({"activities.standard_value": "mean"}).reset_index()
+        )
+        best_structure = (
+            df.sort_values(by="docking.predicted_rmsd", ascending=True)
+            .groupby(group_key)[group_key + ["docking.predicted_rmsd", "molecule"]]
+            .head(1)
+        )
+        deduped = pd.merge(mean_activity, best_structure, how="outer", on=group_key)
+        df = pd.merge(
+            df.drop_duplicates(group_key),
+            deduped,
+            how="left",
+            on=group_key,
+            suffixes=(".orig", None),
+        )
+        for col in ("activities.standard_value", "docking.predicted_rmsd", "molecule"):
+            del df[f"{col}.orig"]
+        # df.set_index("ID", inplace=True)
+        print(f"{df.shape[0]} complexes remain after deduplication.")
 
     print("Checking for missing pocket mol2 files...")
     df["similar.klifs_structure_id"] = (
@@ -162,12 +168,13 @@ def process_raw_data(
                 for klifs_id in tqdm(klifs_ids):
                     if klifs_id in sequence_cache:
                         continue
-                    sequence = get_pocket_sequence([klifs_id])
+                    sequence = get_pocket_sequence([klifs_id])[0]
                     sequence_cache[klifs_id] = sequence
                 df_sequences = sequence_cache.to_data_frame()
                 df = pd.merge(df, df_sequences, on="similar.klifs_structure_id")
             break
         except Exception as e:
+            raise(e)
             print(f"Querying KLIFS for sequence from structure id raised {e}")
             print("Retrying..")
             sleep(10)
