@@ -83,6 +83,7 @@ def process_raw_data(
         pocket_sequence_file = raw_dir / "pocket_sequences.csv"
     raw_fp = str(raw_dir / file_name)
     print(f"Reading data frame from {raw_fp}...")
+    # molColName = "ligand_name" if live_predictions else "molecule"
     df = PandasTools.LoadSDF(
         raw_fp,
         smilesName="compound_structures.canonical_smiles",
@@ -91,12 +92,11 @@ def process_raw_data(
         removeHs=remove_hydrogen,
     )
 
-    if activity_type_subset is not None:
-        print("printing df:")
-        print(df.columns)
-        df = df.query("`activities.standard_type` in @activity_type_subset")
-
     if not live_predictions:
+        if activity_type_subset is not None:
+            print("printing df:")
+            print(df.columns)
+            df = df.query("`activities.standard_type` in @activity_type_subset")
         df["activities.standard_value"] = df["activities.standard_value"].astype(float)
         df["docking.predicted_rmsd"] = df["docking.predicted_rmsd"].astype(float)
 
@@ -373,7 +373,6 @@ class KinodataDocked(InMemoryDataset):
         )
 
         chunk_size = 12000
-        print(f'{len(complex_info)=}')
         temp_files = []
 
         if self.use_multiprocessing:
@@ -444,6 +443,7 @@ class KinodataDockedLive(InMemoryDataset):
         require_kissim_residues: bool = False,
         use_multiprocessing: bool = True,
         num_processes: Optional[int] = None,
+        force_reprocess: bool = False
     ):
         self.remove_hydrogen = remove_hydrogen
         self._prefix = prefix
@@ -459,8 +459,16 @@ class KinodataDockedLive(InMemoryDataset):
         )
         self.num_processes = num_processes
         self.post_filter = post_filter
-        super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+
+        super().__init__(root, transform, pre_transform, pre_filter, force_reload=force_reprocess)
+
+        # Load the processed data or trigger processing
+        if os.path.exists(self.processed_paths[0]):
+            self.data, self.slices = torch.load(self.processed_paths[0])
+        else:
+            raise FileNotFoundError(f"Processed file not found: {self.processed_paths[0]}")
+
+        print('Done with init')
 
     @property
     def pocket_sequence_file(self) -> Path:
@@ -665,6 +673,7 @@ def apply_transform_instance_permament(
 def _process_pyg(args) -> Optional[HeteroData]:
     return process_pyg(*args)
 
+
 def _process_pyg_to_file(args) -> Optional[str]:
     result = process_pyg(*args)
     if result is not None:
@@ -672,6 +681,7 @@ def _process_pyg_to_file(args) -> Optional[str]:
             torch.save(result, temp_file.name)
             return temp_file.name  # Return the temporary file path
     return None
+
 
 def process_pyg(
     complex: Optional[ComplexInformation] = None,
